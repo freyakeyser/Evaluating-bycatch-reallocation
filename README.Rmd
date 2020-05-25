@@ -26,6 +26,14 @@ Syntax highlighted code block
 [Link](url) and ![Image](src)
 ```
 
+```{r}
+vec <- c(1,2,3)
+abc <- c(a,b,c)
+require(ggplot2)
+ggplot() + geom_point(data=cbind(vec, abc), aes(vec, abc))
+```
+
+
 For more details see [GitHub Flavored Markdown](https://guides.github.com/features/mastering-markdown/).
 
 ### Jekyll Themes
