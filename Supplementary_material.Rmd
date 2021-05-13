@@ -1,0 +1,1095 @@
+---
+title: "Supplementary material"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+bibliography: [packages.bib]
+nocite: | 
+  @ggplot22016, @knitr2014, @knitr2015, @lubridate2011, @mgcv2003, @mgcv2004, @mgcv2011, @mgcv2016, @mgcv2017, @plyr2011, @R-base,  @R-cowplot, @R-dplyr, @R-egg, @R-ggplot2, @R-ggrepel, @R-gridExtra, @R-knitr, @R-lubridate, @R-mgcv, @R-nlme, @R-pander, @R-patchwork, @R-plyr, @R-reshape2, @R-stringr, @R-tidyr, @R-zoo, @reshape22007, @zoo2005, @marmap2013, @R-boot, @R-ggnewscale, @R-ggspatial, @R-marmap, @R-rgdal, @R-rnaturalearth, @R-rnaturalearthdata, @R-rnaturalearthhires, @R-RStoolbox, @R-sf, @R-sp, @R-tmaptools, @sf2018, @sp2013
+---
+
+# Set up
+
+```{r, echo=T, results='hide', message=F, warning=F, error=F}
+knitr::opts_chunk$set(echo = TRUE, error = TRUE)
+require(knitr)
+require(lubridate)
+require(plyr)
+require(dplyr)
+require(boot)
+require(pander)
+require(reshape2)
+require(ggplot2)
+require(zoo)
+require(stringr)
+require(tidyr)
+require(ggrepel)
+require(mgcv)
+require(cowplot)
+require(egg)
+require(patchwork)
+require(ggrepel)
+require(marmap)
+require(sf)
+require(tmaptools)
+require(rnaturalearth)
+require(rnaturalearthdata)
+require(rnaturalearthhires)
+require(rgdal)
+require(RStoolbox)
+require(pals)
+require(ggnewscale)
+require(ggspatial)
+
+knitr::write_bib(c(.packages(), "knitr"), "packages.bib")
+options(scipen=999)
+```
+
+Set directories
+```{r, echo=T, results='hide', message=F, warning=F, error=F}
+direct <- "C:/Users/keyserf/Documents/Version_control_pandemic/Bycatch/"
+direct_fns <- "C:/Users/keyserf/Documents/Github/FK/"
+```
+
+
+-------------------
+
+# Data preparation
+
+Read in the trip data, 2004-2018
+```{r, echo=T, results='hide', message=F, warning=F, error=F}
+bycatch_hist <- read.csv(paste0(direct, "data/Bycatch report historical.csv"), stringsAsFactors = F)
+```
+
+Prepare the trip-level discard data
+```{r, echo=T, results='hide', message=F, warning=F, error=F}
+# max year
+year <- 2018
+# max month (all year, so 12)
+maxmonth <- 12
+
+# clean up the names in the data
+bycatch_hist <- bycatch_hist[,!names(bycatch_hist) %in% names(bycatch_hist)[which(grepl(names(bycatch_hist), pattern = "X"))]]
+
+names(bycatch_hist) <- c("Vessel", "CFV", "TRIP", "Trip.ID", "BOARD_DATE", "date.land", "OBSERVED_HOOKS", "TOTAL_HOOKS", "Proportion.dredges", "YT_TOTAL_SAMPLE_WT", "YT_PRORATED_WT", "COD_TOTAL_SAMPLE_WT", "COD_PRORATED_WT", "HAD_TOTAL_SAMPLE_WT", "HAD_PRORATED_WT", "hm.trip", "Split.trip")
+
+# just for simplicity (borrowed other code)
+discards_report <- bycatch_hist
+
+# You might need to ymd these instead of dmy if you are getting a warning here...
+discards_report$BOARD_DATE <- dmy(discards_report$BOARD_DATE)
+#discards_report$BOARD_DATE <- ymd(discards_report$BOARD_DATE)
+discards_report$date.land <- dmy(discards_report$date.land)
+#discards_report$date.land <- ymd(discards_report$date.land)
+
+# assign trips to month based on the month with the most days fished.
+discards_report$startmonth <- month(discards_report$BOARD_DATE)
+discards_report$endmonth <- month(discards_report$date.land)
+discards_report$ndays_1 <- ifelse((discards_report$startmonth==discards_report$endmonth)==F,
+                                  difftime((floor_date((discards_report$date.land),
+                                                       unit="month")-days(1)),
+                                           discards_report$BOARD_DATE, units="day"), NA)
+discards_report$ndays_2 <- ifelse((discards_report$startmonth==discards_report$endmonth)==F,
+                                  day(discards_report$date.land), NA)
+discards_report$month <- as.numeric(ifelse((
+  discards_report$startmonth == discards_report$endmonth) == T,
+  month(discards_report$date.land),
+  ifelse(discards_report$ndays_1 > discards_report$ndays_2,
+         month(discards_report$BOARD_DATE),
+         month(discards_report$date.land))))
+discards_report$year <- year(discards_report$date.land)
+discards_report <- arrange(dplyr::select(
+  discards_report, -startmonth, -endmonth, -ndays_1, -ndays_2),
+  year, month, date.land)
+
+discards_report <- discards_report %>% arrange(year, month, date.land)
+
+trip_summary <- discards_report %>%
+  filter(year>2004) %>%
+  group_by(year) %>%
+  tally() %>%
+  summarise(mean = mean(n))
+
+tripsyear <- length(discards_report$Trip.ID[is.na(discards_report$Trip.ID)])
+tripsold <- max(as.numeric(gsub(x= discards_report$Trip.ID[!is.na(discards_report$Trip.ID)], pattern=paste0("T", min(discards_report$year), "-"), replacement="")))
+
+if(!discards_report$year[!is.na(discards_report$Trip.ID)][length(discards_report$Trip.ID[!is.na(discards_report$Trip.ID)])] ==
+   year) tripsold <- 0
+
+discards_report$Trip.ID[is.na(discards_report$Trip.ID)] <-
+  c(paste0("T",unique(discards_report[is.na(discards_report$Trip.ID),]$year),
+           "-", (tripsold + 1:tripsyear)))
+
+discards_month <- ddply(.data=discards_report, .(year, month),
+                        summarise,
+                        PD_YTF = sum(YT_PRORATED_WT),
+                        PD_COD = sum(COD_PRORATED_WT),
+                        PD_HAD = sum(HAD_PRORATED_WT),
+                        effort = sum(hm.trip))
+
+allmonths <- arrange(expand.grid(year=unique(discards_month$year), month=1:12), year, month)
+
+discards_month <- arrange(join(discards_month, allmonths, type="full"), year, month)
+
+discards_month[discards_month$year==year & discards_month$month > maxmonth, c("PD_YTF", "PD_COD", "PD_HAD", "effort")] <- "NA"
+```
+
+Prepare the fishery data
+```{r, echo=T, results='hide', message=F, warning=F, error=F}
+# source("C:/Documents/Offshore scallop/Assessment/Assessment_fns/Fishery/logs_and_fishery_data.r")
+# logs_and_fish(loc="offshore",year = 2004:2018, direct="Y:/Offshore scallop/Assessment/")
+# new.log.dat$year <- year(new.log.dat$fished)
+# new.log.dat$month <- month(new.log.dat$fished)
+# new.log.dat$date <- ymd(new.log.dat$date)
+# old.log.dat$date <- ymd(old.log.dat$date)
+#
+# log.dat <- rbind(old.log.dat[, c("year", "month", "bank", "hm", "pro.repwt")], new.log.dat[, c("year", "month", "bank", "hm", "pro.repwt")])
+# spat.dat <- rbind(old.log.dat[,c("year", "month", "date", "bank", "hm", "pro.repwt","lat", "lon", "numtow")], new.log.dat[,c("year", "month", "date", "bank", "hm", "pro.repwt","lat", "lon", "numtow")])
+# save(log.dat, file=paste0(direct, "Reallocation/Data/log_dat.Rdata"))
+# save(spat.dat, file=paste0(direct, "Reallocation/Data/spat_dat.Rdata"))
+load(file=paste0(direct, "Reallocation/Data/log_dat.Rdata"))
+load(file=paste0(direct, "Reallocation/Data/spat_dat.Rdata"))
+
+months <- data.frame(month=format(ISOdate(2004,1:12,1),"%B"),num = 1:12)
+fixmonth <- join(log.dat[log.dat$year <2009,], months, type="left")
+log.dat[log.dat$year <2009,]$month <- fixmonth$num
+
+log.dat$month <- as.numeric(as.character(log.dat$month))
+
+
+fixmonth <- join(spat.dat[spat.dat$year <2009,], months, type="left")
+spat.dat[spat.dat$year <2009,]$month <- fixmonth$num
+
+spat.dat$month <- as.numeric(as.character(spat.dat$month))
+
+cumsum_narm <- function(x) {
+  x[is.na(x)] <- 0
+  return(cumsum(x))
+}
+
+fleeteffort <- ddply(.data=log.dat[log.dat$bank %in% c("GBa", "GBb"),],
+                     .(year, month),
+                     summarize,
+                     totaleffort = sum(hm, na.rm=T))
+
+fleetlandings <- ddply(.data=log.dat[log.dat$bank %in% c("GBa", "GBb"),],
+                     .(year, month),
+                     summarize,
+                     totalcatch = sum(pro.repwt, na.rm=T))
+
+fleetmonths <- expand.grid(year=min(fleetlandings$year):max(fleetlandings$year),
+                           month=unique(fleetlandings$month))
+
+fleeteffort <- join(fleeteffort, fleetmonths, type="full")
+fleeteffort$totaleffort[is.na(fleeteffort$totaleffort)] <- 0
+
+fleetlandings <- join(fleetlandings, fleetmonths, type="full")
+fleetlandings$totalcatch[is.na(fleetlandings$totalcatch)] <- 0
+
+## calculate cumulative landings in fleetlandings first
+fleetlandings_cumu <- fleetlandings %>%
+  group_by(year) %>%
+  mutate_at(vars(totalcatch), cumsum_narm)
+
+names(fleetlandings_cumu) <- c("year", "month", "cumulativecatch")
+
+fleetlandings_eoy <- ddply(.data=fleetlandings_cumu, .(year),
+                           summarize,
+                           finalcatch = max(cumulativecatch))
+
+fleetlandings_cumu <- join(data.frame(fleetlandings_cumu), fleetlandings_eoy, type="left")
+
+## cumulative effort
+fleeteffort_cumu <- fleeteffort %>%
+  group_by(year) %>%
+  mutate_at(vars(totaleffort), cumsum_narm)
+
+names(fleeteffort_cumu) <- c("year", "month", "cumulativeeffort")
+
+fleeteffort_eoy <- ddply(.data=fleeteffort_cumu, .(year),
+                           summarize,
+                           finaleffort = max(cumulativeeffort))
+
+fleeteffort_cumu <- join(data.frame(fleeteffort_cumu), fleeteffort_eoy, type="left")
+
+## need the TACs too
+TAC <- read.csv(paste0(direct, "data/Ref_pts_and_tac.csv"))
+TAC <- TAC[TAC$bank %in% c("GBa", "GBb") & TAC$year >2003 & TAC$year < 2019,]
+# Tonnes to KG
+TAC$TAC <- TAC$TAC * 1000
+TACs <- ddply(.data=TAC[,c("year", "TAC", "bank")], .(year),
+              summarize,
+              TAC=sum(TAC))
+
+```
+
+Join fishery with discards data
+```{r, echo=T, results='hide', message=F, warning=F, error=F}
+#join the landings data
+discards_month <- join(discards_month, fleetlandings_cumu, type="full")
+
+# join the effort data
+discards_month <- join(discards_month, fleeteffort_cumu, type="full")
+discards_month <- join(discards_month, fleeteffort[!(fleeteffort$year == year & fleeteffort$month > maxmonth),], type="left")
+
+#join the TAC data
+discards_month <- join(discards_month, TACs, type="left")
+
+discards_month <- discards_month %>% arrange(year, month)
+
+discards_month <- data.frame(apply(discards_month, 2, function(x) as.numeric(x)))
+```
+
+Start calculating derived discard metrics
+```{r, echo=T, results='hide', message=F, warning=F, error=F}
+## discard rate (DR) - NOT MOVING AVERAGE
+DR <- NULL
+discards_month_melt <- melt(discards_month, measure.vars = c("PD_YTF", "PD_COD", "PD_HAD"))
+discards_month_melt$DR <- discards_month_melt$value / discards_month_melt$effort
+
+discards_month_melt$DRsp <- gsub(x=discards_month_melt$variable, pattern="PD_", "DR_")
+names(discards_month_melt) <- c("year", "month", "effort", "cumulativecatch", "finalcatch", "cumulaltiveeffort", "finaleffort", "totaleffort", "TAC", "name", "PD", "DR", "DRsp")
+
+## widen melted df to fill in missing DRs
+discards_month_melt_1 <- dcast(discards_month_melt, year + month + effort + totaleffort ~ name, value.var = "PD")
+discards_month_melt_2 <- dcast(discards_month_melt, year + month + effort + totaleffort ~ DRsp, value.var = "DR")
+discards_month_2 <- join(discards_month_melt_1, discards_month_melt_2, type="full")
+discards_month <- join(discards_month_2, select(discards_month, -PD_YTF, -PD_HAD, -PD_COD))
+
+species <- c("COD", "HAD", "YTF")
+#### input missing DRs
+# list of missing months
+missmonths <- discards_month[is.na(discards_month$DR_COD) & !is.na(discards_month$totaleffort), c("year", "month")]
+
+# number of missing months?
+missmonths2 <- discards_month[is.na(discards_month$DR_COD) & !is.na(discards_month$totaleffort) & discards_month$totaleffort>0 &
+                              discards_month$year>2004, c("year", "month")]
+# for text on missing months
+dim(missmonths2)
+dim(discards_month[discards_month$year>2004 &  discards_month$totaleffort>0,])
+
+for(i in 2:dim(discards_month)[1]) {
+  for(j in 1:length(species)){
+    if(is.na(discards_month[i ,paste0("DR_", species[j])])) {
+      discards_month[i,paste0("DR_", species[j])] <- discards_month[i-1,paste0("DR_", species[j])]
+    }
+  }
+}
+
+## Discard estimate (mt)
+discards_month$D_YTF <- discards_month$DR_YTF*discards_month$totaleffort*0.001
+discards_month$D_COD <- discards_month$DR_COD*discards_month$totaleffort*0.001
+discards_month$D_HAD <- discards_month$DR_HAD*discards_month$totaleffort*0.001
+
+## cumulative annual discard (mt)
+DR_D_CAD <- discards_month %>%
+  group_by(year) %>%
+  mutate_at(vars(D_YTF, D_COD, D_HAD), cumsum_narm)
+
+names(DR_D_CAD)[which(names(DR_D_CAD)%in% c("D_YTF", "D_COD", "D_HAD"))] <- c("CD_YTF", "CD_COD", "CD_HAD")
+
+discards_month <- join(discards_month, DR_D_CAD, type="full")
+```
+
+Apply the landings method
+```{r, echo=T, results='hide', message=F, warning=F, error=F}
+# This method normally uses a 10% error metric in case of overruns, so this is what they would estimate mid-year for the end of year totals. But we're not going to use the 10% estimate!
+discards_month$RM_COD <- discards_month$CD_COD * (discards_month$TAC / discards_month$cumulativecatch)# * 1.1
+discards_month$RM_HAD <- discards_month$CD_HAD * (discards_month$TAC / discards_month$cumulativecatch)# * 1.1
+discards_month$RM_YTF <- discards_month$CD_YTF * (discards_month$TAC / discards_month$cumulativecatch)# * 1.1
+```
+
+Final data cleaning steps
+```{r, echo=T, results='hide', message=F, warning=F, error=F}
+discards_month_melt_final <- melt(discards_month, id.vars=c("year", "month", "effort", "totaleffort", "cumulativeeffort", "finaleffort", "cumulativecatch", "finalcatch", "TAC"))
+discards_month_melt_final$species <- str_sub(discards_month_melt_final$variable, -3)
+discards_month_melt_final$species <- as.factor(discards_month_melt_final$species)
+discards_month_melt_final$species <- factor(discards_month_melt_final$species, labels=c("Cod", "Haddock", "Yellowtail"))
+discards_month_melt_final$variable <- gsub(x=str_sub(discards_month_melt_final$variable, 1, -4), "_", "")
+discards_month_melt_final$date <- ymd(paste0(discards_month_melt_final$year, "-", discards_month_melt_final$month, "-", 15))
+
+# note the ones where DR assumed
+missmonths$missing <- "missing"
+
+discards_month_melt_final <- join(discards_month_melt_final, missmonths, type="full")
+
+discards_month_melt_final$value[discards_month_melt_final$year==2004 & discards_month_melt_final$variable=="RM" & discards_month_melt_final$value=="0"] <- NA
+
+# cumulative relative discards
+discards_month_melt_final_eoy <- discards_month_melt_final[discards_month_melt_final$variable=="CD" & discards_month_melt_final$month==12,c("year", "species", "value")]
+names(discards_month_melt_final_eoy) <- c("year", "species", "eoy_total")
+
+discards_month_melt_final <- join(discards_month_melt_final, discards_month_melt_final_eoy, type="full")
+```
+
+
+
+-----------------------------
+
+# Analysis
+
+Developing the seasonal models
+```{r, echo=T, results='hide', message=F, warning=F, error=F}
+# Plot the raw data and toss a gam smooth through it and see how it looks
+discards_month_melt_final$meanrelative <- discards_month_melt_final$value/discards_month_melt_final$eoy_total
+
+# ggplot(data = discards_month_melt_final[discards_month_melt$year > 2004 & discards_month_melt_final$variable == "D",], aes(month,meanrelative,colour = year)) + facet_wrap(~species) +
+#   geom_point() + geom_smooth(method="gam")
+# # Dang 0's break the easy peasy methods...
+
+# # But better still let's make a proper Gam
+# # The gam will be a beta family, alternatively we could use an offset with something like a gamma (but 0's), so this is just easier, if it works
+gam.dat <- discards_month_melt_final[discards_month_melt_final$variable == "D",]
+gam.dat <- gam.dat[gam.dat$year > 2004,]
+gam.mod <- gam(meanrelative ~ s(month,by=species),family = betar(),data= gam.dat)
+#plot(gam.mod)
+gam.check(gam.mod)
+
+new.dat <- expand.grid(species = c("Cod", "Haddock","Yellowtail"),month = seq(1,12,by=0.1))
+new.dat$pred <- predict(gam.mod,newdata= new.dat,type="response")
+new.dat$pred.logit <- predict(gam.mod,newdata= new.dat)
+new.dat$se <- predict(gam.mod,newdata= new.dat,se.fit=T)$se.fit
+new.dat$LCI <- inv.logit(new.dat$pred.logit - 2*new.dat$se)
+new.dat$UCI <- inv.logit(new.dat$pred.logit + 2*new.dat$se)
+
+# Discard rate anomaly too
+# We could also make a discard rate anomoly plot, if we standardize against the median discard rate in a given year this same thing would
+# indicate how much a given month lands above average.
+
+# So this is the piping version
+gam.dat2 <- discards_month_melt_final[discards_month_melt_final$variable == "DR",]
+gam.dat2 <- gam.dat2[gam.dat2$year > 2004,]
+tmp <- gam.dat2 %>% # SO send gam.dat into this grouping
+          group_by(year,species) %>% # Then run the calculation on this group
+          dplyr::summarize(median.DR = median(value,na.rm=T)) # And here's your median
+# Now stitch these together with a join
+gam.dat2 <- left_join(gam.dat2,tmp,by = c("year","species"))
+gam.dat2$DR.anomaly <- gam.dat2$value/gam.dat2$median.DR # Note I've divided here not subtracted, so we are looking at a proportional anomaly...
+
+# Now for an anomaly model.. Note the anomalies are in terms of a proportion which is kinda weird, but what
+# this represents is the propotional deviation from the annual median discard rate.  A value of 1 means
+# it was an average month in a given year
+
+gam.dr.a.mod <- gam(DR.anomaly ~ month + s(month,by=species),family = Gamma(link="log"),data= gam.dat2[gam.dat2$DR.anomaly>0,])
+
+gam.check(gam.dr.a.mod)
+
+new.dat$pred.anom <- predict(gam.dr.a.mod,newdata= new.dat,type="response")
+new.dat$pred.anom.link <- predict(gam.dr.a.mod,newdata= new.dat, type="link")
+new.dat$anom.se <- predict(gam.dr.a.mod,newdata= new.dat,se.fit=T)$se.fit
+new.dat$anom.LCI <- exp(new.dat$pred.anom.link - 2*new.dat$anom.se)
+new.dat$anom.UCI <- exp(new.dat$pred.anom.link + 2*new.dat$anom.se)
+
+# values for text
+
+#The proportional discards increased rapidly from X in January to Y in April. 
+new.dat$pred[new.dat$species=="Cod" & new.dat$month==1]
+new.dat$pred[new.dat$species=="Cod" & new.dat$month==4]
+
+new.dat$pred[new.dat$species=="Haddock" & new.dat$month==1]
+new.dat$pred[new.dat$species=="Haddock" & new.dat$month==4]
+
+new.dat$pred[new.dat$species=="Yellowtail" & new.dat$month==1]
+new.dat$pred[new.dat$species=="Yellowtail" & new.dat$month==5]
+
+```
+
+Projection model for discards
+```{r, echo=T, results='hide', message=F, warning=F, error=F}
+discards_month_melt_final$propcatch <- discards_month_melt_final$cumulativecatch/discards_month_melt_final$finalcatch
+moddat <- discards_month_melt_final[discards_month_melt_final$year > 2004 & discards_month_melt_final$variable=="CD", c("year", "month", "species", "value", "eoy_total")]
+
+moddat$value[is.na(moddat$value)] <- 0
+
+moddat$prop <- moddat$value/moddat$eoy_total
+
+moddat$record <- 1:nrow(moddat)
+
+discard_gam <- function(speciesID){
+  moddat_sp <- moddat[moddat$species==speciesID,]
+
+  print(hist(moddat_sp$value/moddat_sp$eoy_total))
+
+  require(mgcv)
+
+  mod_s <- gam(data = moddat_sp,
+                  formula = value/eoy_total ~ s(month),
+                  family=betar(link="logit"))
+
+  checkplots <- gam.check(mod_s)
+
+  summary(mod_s)
+
+   fits <- cbind(as.data.frame(predict(mod_s, se.fit=T, unconditional=T, type="link")), # unconditional=T based on advice from predict.gam/plot.gam (sewithMean option)
+                          mod_s$model)
+  require(boot)
+
+  if(mod_s$family$link == "logit") ilink <- function(x) inv.logit(x)
+  if(mod_s$family$link == "log") ilink <- function(x) exp(x)
+
+  modplot <- ggplot() +
+    geom_ribbon(data=fits, aes(month, ymin=ilink(fit-1.96*se.fit), ymax=ilink(fit+1.96*se.fit)), fill="grey", alpha=0.5) +
+    geom_point(data=fits, aes(month, `value/eoy_total`), size=1) +
+    geom_line(data=fits, aes(month, ilink(fit)), colour="black") +
+    geom_line(data=fits, aes(month, ilink(fit-1.96*se.fit)), lty="dashed", colour="black")+
+    geom_line(data=fits, aes(month, ilink(fit+1.96*se.fit)), lty="dashed", colour="black") +
+    theme_bw() +
+    theme(panel.grid=element_blank()) +
+    #ggtitle(paste0(speciesID, " - ", c(mod_s$call))) +
+    geom_text(aes(1,1), label=speciesID, size=4, vjust=1, hjust=0) +
+    ylab(expression(paste("Cumulative proportional discards")))+#, frac(CD[paste("m,y")],D[y])))) +
+    xlab("Month (m)") +
+    scale_x_continuous(breaks=1:12, labels=1:12, expand=c(0.02,0.02))+
+    scale_y_continuous(expand=c(0.02,0.02))
+
+  se_month <- ddply(.data=fits, .(month),
+        summarize,
+        se.fit.invlogit.lo = inv.logit(unique(fit - 1.96* se.fit)),
+        se.fit.invlogit.up = inv.logit(unique(fit + 1.96* se.fit)),
+        fit.invlogit = inv.logit(unique(fit)))
+
+  return(list(moddat_sp=moddat_sp, mod_s=mod_s, checkplots=checkplots, fits=fits, se_month=se_month, modplot=modplot))
+}
+
+codmod <- discard_gam(speciesID="Cod")
+hadmod <- discard_gam(speciesID="Haddock")
+ytfmod <- discard_gam(speciesID="Yellowtail")
+
+summary(codmod$mod_s)
+summary(hadmod$mod_s)
+summary(ytfmod$mod_s)
+
+gam.check(codmod$mod_s)
+gam.check(hadmod$mod_s)
+gam.check(ytfmod$mod_s)
+
+```
+
+Compare the projections from the landings method and seasonal method using Relative Error metric for bias and precision.
+
+1) Get the relative error from the landings method
+
+```{r, echo=T, results='hide', message=F, warning=F, error=F}
+compare_rm <- dcast(data = discards_month_melt_final[discards_month_melt_final$variable %in% c("RM"),], year + month + species~ variable)
+
+compare_rm <- join(compare_rm[compare_rm$year > 2004,],
+                   discards_month_melt_final[discards_month_melt_final$variable =="CD" &
+                                               discards_month_melt_final$month==12 &
+                                               discards_month_melt_final$year>2004, c("year", "species", "value")])
+
+compare_rm$rel.error <- compare_rm$RM/compare_rm$value# - 1
+```
+
+2) Do the proration for the seasonal model and calculate the relative error all at once
+
+```{r, echo=T, results='hide', message=F, warning=F, error=F}
+prorate_eoy_gam <- function(mod, speciesID){
+
+  # join data with model fitted means and CIs
+  prorate_df <-join(mod$moddat_sp, mod$se_month, type="left")
+
+  # prorate the estimates by the model fits
+  prorate_df2 <- data.frame(eoy_est = prorate_df$value / prorate_df$fit.invlogit, month=prorate_df$month, year=prorate_df$year,  eoy_total = prorate_df$eoy_total, type="Fitted mean")
+
+  # calculate the estimation errors (proportional and absolute)
+  prorate_df2$rel.error <- prorate_df2$eoy_est/prorate_df2$eoy_total# - 1
+
+  return(list(prorated_est = prorate_df2))#, proportional=proportional, magnitude=magnitude, table_GAM=table_GAM))
+}
+
+GAM_res_cod <- prorate_eoy_gam(speciesID="Cod", mod=codmod)
+GAM_res_had <- prorate_eoy_gam(speciesID="Haddock", mod=hadmod)
+GAM_res_ytf <- prorate_eoy_gam(speciesID="Yellowtail", mod=ytfmod)
+```
+
+3) Clean up the relative error data
+
+```{r, echo=T, results='hide', message=F, warning=F, error=F}
+tac_estimates <- compare_rm[compare_rm$year > 2004,]
+gam_estimates <- rbind(data.frame(GAM_res_cod$prorated_est, species="Cod"),
+                       data.frame(GAM_res_had$prorated_est, species="Haddock"),
+                       data.frame(GAM_res_ytf$prorated_est, species="Yellowtail"))
+
+# match up the names
+names(tac_estimates)[which(names(tac_estimates)=="RM")] <- "est"
+names(tac_estimates)[which(names(tac_estimates)=="value")] <- "real"
+
+names(gam_estimates)[which(names(gam_estimates)=="eoy_est")] <- "est"
+names(gam_estimates)[which(names(gam_estimates)=="eoy_total")] <- "real"
+```
+
+4) Model it. GLS model gives shrinking CIs over time, which make the most sense! We did try glm & gam (with gamma, beta, and gaussian distributions too). Based on https://rpubs.com/bbolker/6298
+
+ \[ \begin{split} Y_{ij} & = \delta_i + \epsilon_{ij} \\ \epsilon_{ij} & \sim \text{Normal}(0,\sigma^2_i) ; \end{split} \] 
+
+
+```{r, echo=T, results='hide', message=F, warning=F, error=F}
+all_estimates <- rbind(data.frame(tac_estimates[, c("year", "month", "species", "est", "real", "rel.error")], type="tac"),
+                       data.frame(gam_estimates[, c("year", "month", "species", "est", "real", "rel.error")], type="gam"))
+
+# a function that will compare the estimation error between methods. uses the un-summarized est/real values as the response, and month and type as a predictor.
+est_mod <- function(speciesID, model, family){
+
+  temp_dat <- all_estimates
+
+  # if(model=="glm" & family=="gamma"){
+  #   # for the Gamma model, need to adjust 0's to slightly above 0. Dave suggested half of the minimum value that isn't 0. Check them out first though... it's only 2 months. It happened because the model estimated 0, but the real value was 3.4.
+  #    mod <- glm(data=temp_dat[temp_dat$species==speciesID &
+  #                                   !temp_dat$type=="glm" & temp_dat$rel.error>0,], rel.error ~ as.factor(type)*as.factor(month), family=Gamma(link="log"))
+  # }
+
+  # if(model=="gam" & family=="normal"){
+  #   mod <- gam(data=all_estimates[all_estimates$species==speciesID & !all_estimates$type=="glm",],
+  #              rel.error ~ as.factor(type) + s(month, by=as.factor(type)))
+  # }
+
+  # if(model=="gam" & family=="gamma"){
+  #
+  # mod <- gam(data=temp_dat[temp_dat$species==speciesID & !temp_dat$type=="glm" & temp_dat$rel.error>0,],
+  #            rel.error ~ s(month, by=as.factor(type)) + as.factor(type),
+  #            family=Gamma(link="log"), method = "REML")
+  # }
+
+  if(model=="gls"){
+    temp_dat$month <- as.factor(temp_dat$month)
+    mod <- gls(data = temp_dat[temp_dat$species==speciesID & !temp_dat$type=="glm" & temp_dat$rel.error >0,],
+               log(rel.error) ~ type*month -type -month - 1,
+               weights = varIdent(form = ~1 | month))
+
+    # mod <- gls(data = temp_dat[temp_dat$species==speciesID & !temp_dat$type=="glm" & temp_dat$rel.error >0,],
+    #            log(rel.error) ~ type*month -type -month - 1,
+    #            weights = varIdent(form = ~1))
+    # AIC was higher than the one above.
+
+    # mod3 <- gls(data = temp_dat[temp_dat$species==speciesID & !temp_dat$type=="glm" & temp_dat$rel.error >0,],
+    #            log(rel.error) ~ type*month -type -month - 1,
+    #            weights = varIdent(form = ~1 | month*type))
+    #   Error in gls(data = temp_dat[temp_dat$species == speciesID & !temp_dat$type ==  :
+    # false convergence (8)
+  }
+
+  # if(model=="gam"){
+  #   source(paste0(direct_fns, "/Bycatch_fns/gam_post_simulate.R"))
+  #   gam_post_sim_plot <- gam_post_simulate(gamobj=mod, x="month", y="rel.error")
+  # }
+  #
+  est_mod_sum <- summary(mod)
+  #est_mod_sum_coef <- as.data.frame(coef(est_mod_sum))
+
+  # if(!model=="gls"){
+  # est_mod_sum_coef <- cbind(
+  #   as.data.frame(
+  #     predict(object = mod,
+  #             se.fit=T,
+  #             unconditional=T,  #based on advice from predict.gam/plot.gam (sewithMean option)
+  #             type="link",
+  #             newdata = expand.grid(
+  #               type=c("tac", "gam"),
+  #               month=1:12))),
+  #                         #mod$model)
+  #   expand.grid(
+  #               type=c("tac", "gam"),
+  #               month=1:12))
+  #
+  # est_mod_sum_coef <- unique(est_mod_sum_coef)
+  # }
+  #
+  if(model=="gls"){
+    est_mod_sum_coef <- as.data.frame(coef(summary(mod)))
+    est_mod_sum_coef$month <- rep(1:12, each=2)
+    est_mod_sum_coef$type <- rep(c("tac", "gam"), 12)
+    est_mod_sum_coef$AIC <- summary(mod)$AIC
+    gam_post_sim_plot <- NULL
+  }
+
+  #est_mod_sum_coef$month <- str_extract(row.names(est_mod_sum_coef), "\\-*\\d+\\.*\\d*")
+  #est_mod_sum_coef$type <- str_sub(row.names(est_mod_sum_coef), 5, 7)
+  est_mod_sum_coef$species <- speciesID
+
+  return(list(coef=est_mod_sum_coef, mod=mod, gam_post_sim_plot=gam_post_sim_plot))
+}
+
+
+##### RUN THE MODELS HERE:
+
+est_mod_cod <- est_mod("Cod", model="gls", family="gamma")
+est_mod_had <- est_mod("Haddock", model="gls", family="gamma")
+est_mod_ytf <- est_mod("Yellowtail", model="gls", family="gamma")
+est_mod_coef <- rbind(est_mod_cod$coef, est_mod_had$coef, est_mod_ytf$coef)
+
+
+##### Tidy up the predict output for interpretation purposes
+
+# if("gam" %in% as.character(est_mod_cod$mod$call)[1]){
+# est_mod_sim <- rbind(data.frame(est_mod_cod$gam_post_sim_plot$pred, species="Cod"),
+#                      data.frame(est_mod_had$gam_post_sim_plot$pred, species="Haddock"),
+#                      data.frame(est_mod_ytf$gam_post_sim_plot$pred, species="Yellowtail"))
+# est_mod_coef$model <- "gam"
+# }
+
+# if("residual.scale" %in% names(est_mod_coef)) {
+#   est_mod_coef <- select(est_mod_coef, -residual.scale)
+#   est_mod_coef$model <- "glm"
+# }
+
+if("gls" %in% as.character(est_mod_cod$mod$call)[1]){
+  est_mod_coef <- select(est_mod_coef, Value, Std.Error, type, month, species)
+  est_mod_coef$model <- "gls"
+  }
+
+names(est_mod_coef) <- c("Estimate", "se.fit", "type",
+                         "month",  "species", "model")
+
+# if(!"gls" %in% as.character(est_mod_cod$mod$call)[1]){
+#   if(est_mod_cod$mod$family$link == "logit") ilink <- function(x) inv.logit(x)
+#   if(est_mod_cod$mod$family$link == "log") ilink <- function(x) exp(x)
+#   if(est_mod_cod$mod$family$link == "identity") ilink <- function(x) x
+# }
+
+# we manually log-transformed the data for the GLS so we have to force it back to the response scale
+if("gls" %in% as.character(est_mod_cod$mod$call)[1]) ilink <- function(x) exp(x)
+
+# est_mod_coef$range_lo <- ilink(est_mod_coef$Estimate - 1.96*est_mod_coef$se.fit)
+# est_mod_coef$range_hi <- ilink(est_mod_coef$Estimate + 1.96*est_mod_coef$se.fit)
+
+# if("gam" %in% as.character(est_mod_cod$mod$call)[1]){
+# est_mod_sim <- unique(select(est_mod_sim, fit, uprP, lwrP, uprS, lwrS, month, as.factor.type., compare, species))
+# }
+```
+
+Saving some outputs
+```{r, echo=T, results='hide', message=F, warning=F, error=F}
+figure6_summary <- unique(data.frame(type=est_mod_coef$type, species=est_mod_coef$species, month=est_mod_coef$month, Estimate=est_mod_coef$Estimate, se.fit=est_mod_coef$se.fit))
+figure6_summary$y <- ilink(figure6_summary$Estimate)
+figure6_summary$y_lo <- ilink(figure6_summary$Estimate-1.96*figure6_summary$se.fit)
+figure6_summary$y_up <- ilink(figure6_summary$Estimate+1.96*figure6_summary$se.fit)
+figure6_summary$CIsize <- figure6_summary$y_up - figure6_summary$y_lo
+figure6_summary_CI <- dcast(data=figure6_summary[, c("type", "species", "month", "CIsize", "y_lo", "y_up")], species + month ~ type, value.var = "CIsize")
+names(figure6_summary_CI)[3:4] <- paste0(names(figure6_summary_CI)[3:4], "_CIsize")
+figure6_summary_lo <- dcast(data=figure6_summary[, c("type", "species", "month", "se.fit", "y_lo", "y_up")], species + month ~ type, value.var = "y_lo")
+names(figure6_summary_lo)[3:4] <- paste0(names(figure6_summary_lo)[3:4], "_lo")
+figure6_summary_up <- dcast(data=figure6_summary[, c("type", "species", "month", "se.fit", "y_lo", "y_up")], species + month ~ type, value.var = "y_up")
+names(figure6_summary_up)[3:4] <- paste0(names(figure6_summary_up)[3:4], "_up")
+figure6_summary <- join(figure6_summary_CI, figure6_summary_lo, type="full")
+figure6_summary <- join(figure6_summary, figure6_summary_up, type="full")
+#save(figure6_summary, file = paste0(direct, "Reallocation/Figures/figure6_summary.Rdata"))
+
+##model info for text
+modinfo <- list(codmod=codmod$mod_s, hadmod=hadmod$mod_s, ytfmod=ytfmod$mod_s, est_mod_coef=est_mod_coef, tac_estimates=tac_estimates, gam_estimates=gam_estimates)
+#save(modinfo, file=paste0(direct, "reallocation/Data/modinfo.Rdata"))
+```
+
+--------------------
+
+# Figures
+
+Figure 1
+```{r, echo=T, results='hide', message=F, warning=F, error=F}
+source(paste0(direct_fns, "Assessment_fns/Maps/pectinid_projector_sf.R"))
+source(paste0(direct_fns, "Assessment_fns/Maps/github_spatial_import.R"))
+
+extent2 <- data.frame(x=c(-72, -58), y=c(39.5, 48), crs=4326)
+map_tmp <- pecjector(area = extent2, repo="github", add_layer=list(
+  bathy=c(100, 'c', 1000),
+  eez="eez",
+  #nafo="main",
+  #sfa="offshore",
+  scale.bar = c("br", 0.3)),
+  #direct = "C:/Users/keyserf/Documents/Version_control_pandemic/Offshore/Assessment/",
+  direct_fns="C:/Users/keyserf/Documents/Github/Assessment_fns/",
+  plot_package = "ggplot2", plot = F)
+
+# import offshore data using the *new* github_spatial_import function!
+# offshore <- github_spatial_import(subfolder = "offshore", zipname = "offshore.zip", direct_fns="C:/Users/keyserf/Documents/Github/Assessment_fns/")
+# offshore <- offshore[offshore$ID %in% c("GBa", "GBb"),]
+# SFA27 <- st_union(x = offshore)
+
+# i wanted the bathymetry contours to be a bit lighter
+map_tmp$layers[[2]]$aes_params$colour <- "blue"
+map_tmp$layers[[2]]$aes_params$alpha <- 0.25
+
+# set up the labels
+labels <- data.frame(labs = c("Georges Bank", "Canada", "USA"), #"SFA 27"),
+                     x = c(-67.75, -66,-69),# -66),
+                     y = c(41.28, 43, 43))#, 41.25))
+
+figure1 <- map_tmp +
+  #geom_sf(data=SFA27, fill="lightgreen", alpha=0.25) + # highlight GB in green
+  theme(panel.background=element_rect(fill="white"), panel.grid=element_blank(), panel.border=element_rect(fill=NA, size = 1)) +
+  #annotate(geom="text", x=-65.5, y=44.2, label="Georges Bank", size=3) +
+  geom_text_repel(data=labels[labels$labs=="SFA 27",], aes(x=x, y=y, label=labs), nudge_x=1.5, size=4) +
+  geom_text(data=labels[!labels$labs %in% c("SFA 27", "Georges Bank"),], aes(x=x, y=y, label=labs), fontface="bold", size=6) +
+  geom_text(data=labels[labels$labs == "Georges Bank",], aes(x=x, y=y, label=labs), angle=30, fontface="italic", colour="blue", size=4, alpha=0.5)
+```
+
+```{r echo=T, message=F, warning=F, error=F}
+#png(paste0("C:/Users/keyserf/Documents/Version_control_pandemic/Bycatch/reallocation/Figures/Map_GB_sf_nolines.png"), height=15, width=20, res=400, units="cm")
+print(figure1)
+#dev.off()
+```
+
+Figure 2
+```{r, echo=T, message=F, warning=F, error=F}
+quota <- read.csv(paste0(direct, "reallocation/Data/US and Canada TACs.csv"))
+
+quota <- melt(quota, id.vars="X")
+quota$species <- str_sub(quota$variable, start = 1, end=3)
+quota$variable <- gsub(".*_","",quota$variable)
+
+quota$value <- as.numeric(as.character(gsub(quota$value, pattern="*", replacement="", fixed=T)))
+
+forplot <- quota[quota$variable %in% c("Canadian.quota", "Bycatch.reserve..12..", "Bycatch.reserve..1..", "Bycatch.reserve", "Bycatch.reserve.if.directed.fishery..30.."),]
+forplot$Type[forplot$variable %in% c("Bycatch.reserve..12..", "Bycatch.reserve..1..", "Bycatch.reserve", "Bycatch.reserve.if.directed.fishery..30..")] <- str_sub(forplot$variable[forplot$variable %in% c("Bycatch.reserve..12..", "Bycatch.reserve..1..", "Bycatch.reserve", "Bycatch.reserve.if.directed.fishery..30..")], start = 1, end=15)
+
+forplot[is.na(forplot$Type),]$Type <- forplot$variable[is.na(forplot$Type)]
+forplot$Type <- gsub(x=forplot$Type, pattern=".", replacement=" ", fixed=T)
+
+forplot$species[forplot$species == "COD"] <- "Cod"
+forplot$species[forplot$species == "HAD"] <- "Haddock"
+forplot$species[forplot$species == "YTF"] <- "Yellowtail"
+
+
+labs <- data.frame(lab=c("12%", "1%", "30%\n(if directed fishery occurs)"),
+           species=c("Cod", "Haddock", "Yellowtail"),
+           y=c(max(forplot$value[forplot$Type=="Canadian quota" & forplot$species=="Cod"]),
+               max(forplot$value[forplot$Type=="Canadian quota" & forplot$species=="Haddock"]),
+               max(forplot$value[forplot$Type=="Canadian quota" & forplot$species=="Yellowtail"]))*1.15,
+           x=c(min(forplot$X[forplot$Type=="Canadian quota" & forplot$species=="Cod"]),
+               min(forplot$X[forplot$Type=="Canadian quota" & forplot$species=="Haddock"]),
+               min(forplot$X[forplot$Type=="Canadian quota" & forplot$species=="Yellowtail"])))
+
+
+fixquota <- dcast(forplot, X + species ~ variable)
+
+# There was a directed fishery for YTF in Canada in 2011 and 2012, and prior to 2004.
+fixquota$Bycatch.reserve.if.directed.fishery..30..[!fixquota$X %in% c(2011, 2012) & fixquota$species=="Yellowtail"] <- NA
+
+fixquota$Bycatch.reserve[fixquota$X %in% c(2011, 2012) & fixquota$species=="Yellowtail"] <- NA
+
+fixquota$BR_total <- rowSums(x = fixquota[, c("Bycatch.reserve..1..", "Bycatch.reserve..12..", "Bycatch.reserve.if.directed.fishery..30..")], na.rm=T)
+fixquota$BR_total[fixquota$species=="Yellowtail" & !is.na(fixquota$Bycatch.reserve)] <- NA
+
+fixquota$real.quota[!is.na(fixquota$BR_total)] <- fixquota$Canadian.quota[!is.na(fixquota$BR_total)] - fixquota$BR_total[!is.na(fixquota$BR_total)]
+fixquota$real.quota[!is.na(fixquota$Bycatch.reserve)] <- fixquota$Canadian.quota[!is.na(fixquota$Bycatch.reserve)] - fixquota$Bycatch.reserve[!is.na(fixquota$Bycatch.reserve)]
+
+fixquota <- melt(data=fixquota, id.vars = c("X", "species"))
+
+fixquota$variable <- as.character(fixquota$variable)
+
+fixquota$variable[fixquota$variable=="real.quota"] <- "Groundfish fleet"
+fixquota$variable[fixquota$variable=="BR_total"] <- "Bycatch reserve (scallop)"
+fixquota$variable[fixquota$variable=="Bycatch.reserve"] <- "Bycatch reserve (scallop and groundfish)"
+
+# it would appear that the 2006 bycatch reserve was really just for scallop as there is also groundfish quota for that year
+fixquota$value[fixquota$X==2006 & fixquota$species=="Yellowtail" & fixquota$variable=="Bycatch reserve (scallop)"] <- fixquota$value[fixquota$X==2006 & fixquota$species=="Yellowtail" & fixquota$variable=="Bycatch reserve (scallop and groundfish)"]
+
+fixquota$value[fixquota$X==2006 & fixquota$species=="Yellowtail" & fixquota$variable=="Bycatch reserve (scallop and groundfish)"] <- NA
+
+fixquota$reserve.calc <- NULL
+fixquota$reserve.calc[fixquota$species=="Cod" & fixquota$variable=="Canadian.quota"] <-  fixquota$value[fixquota$species=="Cod" & fixquota$variable=="Canadian.quota"] * 0.12
+fixquota$reserve.calc[fixquota$species=="Yellowtail" & fixquota$variable=="Canadian.quota"] <-  fixquota$value[fixquota$species=="Yellowtail" & fixquota$variable=="Canadian.quota"] * 0.30
+fixquota$reserve.calc[fixquota$species=="Haddock" & fixquota$variable=="Canadian.quota"] <-  fixquota$value[fixquota$species=="Haddock" & fixquota$variable=="Canadian.quota"] * 0.01031
+
+fixquota <- fixquota[!is.na(fixquota$reserve.calc),]
+fixquota <- fixquota %>%
+  rename(Canadian.quota = value) %>%
+  dplyr::select(X, species, Canadian.quota, reserve.calc)
+
+fixquota <- melt(data=fixquota, id.vars = c("X", "species"))
+
+fixquota$variable <- factor(fixquota$variable, levels=c("reserve.calc", "Canadian.quota"))
+
+figure2 <- ggplot() + geom_bar(data=fixquota[fixquota$variable %in% c("Canadian.quota", "reserve.calc") & fixquota$X > 2004,], aes(X, value, fill=variable), stat="identity") +
+  #geom_text(data=labs, aes(x, y, label=paste0("Bycatch reserve: ", lab)), hjust=0, size=3, vjust=1)+
+  facet_wrap(~species, scales="free") +
+  theme_bw() + theme(panel.grid=element_blank()) +
+  scale_x_continuous(breaks=seq(2005,2018,5))+
+  scale_fill_manual(values=c("dimgrey", "darkgrey", "lightgrey"), name=NULL, labels=c("Scallop fishery\nbycatch reserve", "Groundfish quota"))+
+  xlab("Year") +
+  ylab("Metric tonnes")
+
+#png(paste0(direct, "Reallocation/Figures/Quota_and_reserve.png"), height=3, width=7, units="in", res=420)
+print(figure2)
+#dev.off()
+
+```
+
+Figure 3
+TS of discards, calculated without moving average, and replacing missing months with previous month's discard rate.
+```{r, echo=T, message=F, warning=F, error=F}
+### In months with no observer trips but with fishing, discards were calculated using previous month's DR
+### In months with NO FISHING whatsoever, discards are 0.
+plot_discards_ts <- function(speciesID){
+  if(speciesID=="Cod") ybreaks <- c(0, 25, 50)
+  if(speciesID=="Haddock") ybreaks <- c(0, 5, 10, 15, 20)
+  if(speciesID=="Yellowtail") ybreaks <- c(0, 50, 100, 150)
+  dt <- ggplot() + geom_line(data=discards_month_melt_final[discards_month_melt_final$variable=="D" & discards_month_melt_final$species==speciesID& discards_month_melt_final$year>2004,],
+                     aes(date, value)) +
+  # geom_point(data=discards_month_melt_final[!is.na(discards_month_melt_final$missing) & discards_month_melt_final$variable=="D",],
+  #            aes(date, value + adj), shape="*", size=6, colour="blue")+
+  scale_x_date(date_breaks="2 years", date_labels="%Y", limits = as.Date(c("2005-01-15","2018-12-15"))) +
+  theme_bw() +
+  theme(panel.grid=element_blank()) +
+  ylab("Discards (mt)") +
+  xlab("Year") +
+  geom_text(aes(x=as.Date("2018-12-15"),y=max(discards_month_melt_final[discards_month_melt_final$variable=="D" & discards_month_melt_final$species==speciesID  & discards_month_melt_final$year>2004,]$value, na.rm=T)), label=speciesID, size=4, vjust=1, hjust=1) +
+    scale_y_continuous(breaks = ybreaks)
+  return(list(dt=dt))
+}
+
+plot_dt_cod <- plot_discards_ts(speciesID="Cod")
+plot_dt_had <- plot_discards_ts(speciesID="Haddock")
+plot_dt_ytf <- plot_discards_ts(speciesID="Yellowtail")
+
+plot_discardrate_ts <- function(speciesID){
+  if(speciesID=="Cod") ybreaks <- c(0, 0.5, 1, 1.5, 2)
+  if(speciesID=="Haddock") ybreaks <- c(0, 0.25, 0.5, 0.75, 1)
+  if(speciesID=="Yellowtail") ybreaks <- c(0, 2.5, 5, 7.5)
+  drt <- ggplot() + geom_line(data=discards_month_melt_final[discards_month_melt_final$variable=="DR" & discards_month_melt_final$species==speciesID & discards_month_melt_final$year>2004,],
+                     aes(date, value)) +
+  #geom_point(data=discards_month_melt_final[!is.na(discards_month_melt_final$missing) & discards_month_melt_final$variable=="DR",],
+  #          aes(date, value + adj), shape="*", size=6, colour="blue")+
+  scale_x_date(date_breaks="2 years", date_labels="%Y", limits = as.Date(c("2005-01-15","2018-12-15"))) +
+  theme_bw() +
+  theme(panel.grid=element_blank()) +
+  ylab("Discard rate (kg/hm)") +
+  xlab("Year") +
+  geom_text(aes(x=as.Date("2018-12-15"),y=max(discards_month_melt_final[discards_month_melt_final$variable=="DR" & discards_month_melt_final$species==speciesID & discards_month_melt_final$year>2004,]$value, na.rm=T)), label=speciesID, size=4, vjust=1, hjust=1) +
+    scale_y_continuous(breaks = ybreaks)
+  return(list(drt=drt))
+}
+
+plot_drt_cod <- plot_discardrate_ts(speciesID="Cod")
+plot_drt_had <- plot_discardrate_ts(speciesID="Haddock")
+plot_drt_ytf <- plot_discardrate_ts(speciesID="Yellowtail")
+
+#png(paste0(direct, "reallocation/Figures/discards_timeseries_arrange.png"), type="cairo", width=24, height=10, units = "cm", res=400)
+plot_grid(plot_drt_cod$drt + xlab(NULL), plot_drt_had$drt + ylab(NULL) + xlab(NULL), plot_drt_ytf$drt +ylab(NULL) + xlab(NULL), plot_dt_cod$dt, plot_dt_had$dt + ylab(NULL), plot_dt_ytf$dt + ylab(NULL), ncol=3, align="v")
+#dev.off()
+
+```
+
+Figure 4 (+ some figures for Dave's paper)
+```{r, echo=T, message=F, warning=F, error=F}
+figure4a <- ggplot(new.dat,aes(month,pred.anom)) +
+  facet_wrap(~species) +
+  geom_ribbon(aes(ymin = anom.LCI, ymax=anom.UCI), fill="grey", alpha=0.5 ) +
+  geom_line(aes(month, anom.LCI), lty="dashed", colour="black")+
+  geom_line( aes(month, anom.UCI), lty="dashed", colour="black") +
+  geom_line() +
+  geom_hline(yintercept=1, lty=5) +
+  geom_point(data= gam.dat2, aes(month,DR.anomaly), size=1) +
+  ylab("Discard rate anomaly") +  xlab("Month (m)") +
+  scale_x_continuous(breaks=1:12)+
+  theme_bw() + theme(panel.grid=element_blank(),legend.position = "none", strip.text = element_blank()) +
+ geom_text(data=unique(gam.dat[gam.dat$month==12,c("month", "species")]), aes(12, 17, label=species), hjust=1, size=4)
+#print(figure4a)
+
+figure4b <- ggplot(new.dat,aes(month,pred)) +
+  facet_wrap(~species) +
+  geom_ribbon(aes(ymin = LCI, ymax=UCI), fill="grey", alpha=0.5 ) +
+  geom_line(aes(month, LCI), lty="dashed", colour="black")+
+  geom_line( aes(month, UCI), lty="dashed", colour="black") +
+  geom_line() +
+  geom_point(data= gam.dat, aes(month,meanrelative), size=1) +
+  ylab("Proportional discards") +  xlab("Month (m)") +
+  scale_x_continuous(breaks=1:12)+
+  theme_bw() + theme(panel.grid=element_blank(),legend.position = "none", strip.text = element_blank()) +
+  geom_text(data=unique(gam.dat[gam.dat$month==12,c("month", "species")]), aes(12, 0.6, label=species), hjust=1, size=4)
+#print(figure4b)
+
+#png(paste0(direct, "reallocation/Figures/Seasonal_discards_proportion_by_species_GAM_fit_FK_anomaly.png"), type="cairo", width=22, height=16, units = "cm", res=400)
+grid.arrange(figure4a, 
+             figure4b,
+             ncol=1)
+#dev.off()
+
+# Same figure but with only Cod and Yellowtail for DK closure crap...
+# dat_text <- data.frame(label = c("(a)", "(b)"),species = c("Cod","Yellowtail"),
+#                        x = c(1,1),y = rep(max(gam.dat$meanrelative[gam.dat$species != "Haddock"],na.rm=T),2))
+# p1.dk <- ggplot(new.dat[new.dat$species != "Haddock",],aes(month,pred)) + facet_wrap(~species) + geom_line(aes(colour=species),size=1.5,guides=F) +   geom_point(data= gam.dat[gam.dat$species != "Haddock",], aes(month,meanrelative,colour=species), alpha=0.5, size=1) +
+#   geom_ribbon(aes(ymin = LCI, ymax=UCI,colour=species),alpha = 0.1) +
+#   scale_x_continuous(breaks=1:12,labels = NULL)+ #c("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")) +
+#   ylab("Monthly proportion of total discards") +  xlab("") +
+#   theme_bw() + theme(panel.grid=element_blank(),legend.position = "none",text = element_text(size=18)) +
+#   geom_text(dat_text, mapping = aes(x=x,y=y,label=label),size=6)
+#ggsave(paste0(direct,"/reallocation/Figures/Seasonal_discards_proportion_by_species_YT_cod_only_GAM_fit.png"),width=16,height=8)
+
+# Revision of the original figure with bigger text for presentation purposes
+# ggplot() +
+#   geom_point(data=seasonal, aes(month, meanrelative, colour=species, shape=species), size=2) +
+#   geom_line(data=seasonal, aes(month, meanrelative, colour=species)) +
+#   theme_bw() + xlab("")+
+#   theme(panel.grid=element_blank(),text = element_text(size=24)) +
+#   scale_x_continuous(limits = c(1,12), breaks=seq(1,12,1),labels = c("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")) +
+#   ylab("Monthly proportion of total discards (mean)") +
+#   scale_colour_brewer(name="Species", palette = 6, type="qual") +
+#   scale_shape_discrete(name="Species")
+#ggsave(paste0(direct,"/reallocation/Figures/seasonal discards_mean relative_presentation_version.png"),width=14,height=9)
+
+#dev.off()
+```
+
+Figure 5
+```{r, echo=T, message=F, warning=F, error=F}
+#png(paste0(direct, "reallocation/Figures/GAMs.png"), type="cairo", width=22, height=10, units = "cm", res=400)
+grid.arrange(codmod$modplot+ theme(plot.margin=unit(c(5.5, 1, 5.5, 5.5), "pt")),
+             hadmod$modplot + ylab(NULL) + theme(plot.margin=unit(c(5.5, 1, 5.5, 1), "pt"), axis.ticks.y = element_blank(), axis.text.y=element_blank()), 
+             ytfmod$modplot + ylab(NULL) + theme(plot.margin=unit(c(5.5, 5.5, 5.5, 1), "pt"), axis.ticks.y = element_blank(), axis.text.y=element_blank()), ncol=3, widths=c(1.05, 1, 1))
+#dev.off()
+```
+
+Figure 6
+```{r, echo=T, results="hide", message=F, warning=F, error=F}
+#png(paste0(direct, "Reallocation/Figures/Method_evaluation_results-GAM_gamma_REML.png"), height=10, width=22, units="cm", res=400)
+figure6 <- ggplot() +
+  geom_point(data=all_estimates[!all_estimates$type=="glm",], aes(as.numeric(month), rel.error, colour=as.character(type)), alpha=0.2, size=1, position = position_dodge(width=0.5))+#, show.legend = FALSE)+
+  geom_ribbon(data=est_mod_coef, aes(as.numeric(month), ymin=ilink(Estimate-1.96*se.fit), ymax=ilink(Estimate+1.96*se.fit), fill=as.character(type)), alpha=0.3)+#, show.legend = FALSE) +
+  geom_line(data=est_mod_coef, aes(as.numeric(month), ilink(Estimate), colour=as.character(type)), lwd=1)+#, show.legend = FALSE) +
+   # geom_ribbon(data=est_mod_sim, aes(as.numeric(month), ymin=lwrS, ymax=uprS, group=as.factor.type., fill=as.factor.type.), alpha=0.3, show.legend = FALSE) +
+   # geom_line(data=est_mod_sim, aes(as.numeric(month), ilink(fit), colour=as.factor.type., group=as.factor.type.), lwd=1, show.legend = FALSE) +
+  theme_bw() + facet_wrap(~species) +
+  theme(panel.grid=element_blank(), strip.text = element_blank()) +
+  # geom_text(data=labs, aes(12, 6.25, label=species), hjust=1)+
+  #geom_text(data=labs, aes(12, 5, label=species), hjust=1)+
+  geom_hline(yintercept=1, linetype="dashed") +
+  xlab("Month") +
+  ylab("Relative error\n(estimate \u00B1 95% CI)") +
+  scale_x_continuous(breaks=1:12)+
+  scale_colour_brewer(name="Projection method", labels=c("Seasonal", "Landings"), direction = -1, palette = 6, type="qual") +
+  scale_fill_brewer(name="Projection method", labels=c("Seasonal", "Landings"), direction = -1, palette = 6, type="qual") #+
+  #ggtitle(unique(est_mod_coef$model))
+# print(figure6)
+#dev.off()
+```
+
+```{r, echo=T, message=F, warning=F, error=F}
+figure6 <- tag_facet(figure6, tag_pool = c("Cod", "Haddock", "Yellowtail"), open = "", close="", hjust=-0.1, y=6.25, vjust=0.2, fontface = 1)
+#png(paste0(direct, "Reallocation/Figures/Method_evaluation_results-GLS.png"), height=10, width=22, units="cm", res=400)
+print(figure6)
+#dev.off()
+```
+
+<!-- Appendix 1 Figure -->
+```{r, echo=T, message=F, warning=F, error=F, eval=F, include=F}
+
+land_append <- ggplot() +
+  geom_point(data=fleetlandings[fleetlandings$year>2004,], aes(month, totalcatch, group=month)) +
+  geom_smooth(data=fleetlandings[fleetlandings$year>2004,], aes(month, totalcatch), method="gam", formula=y~s(x)) +
+  theme_classic() +
+  scale_x_continuous(breaks=1:12) +
+  ylab("Scallop landings (kg of meat)") +
+  xlab("Month")
+
+effort_append <- ggplot() +
+  geom_point(data=fleeteffort[fleeteffort$year>2004,], aes(month, totaleffort, group=month)) +
+  geom_smooth(data=fleeteffort[fleeteffort$year>2004,], aes(month, totaleffort), method="gam", formula=y~s(x)) +
+  theme_classic() +
+  scale_x_continuous(breaks=1:12) +
+  ylab("Scallop effort (hm)") +
+  xlab("Month")
+
+#png("C:/Users/keyserf/Documents/Version_control_pandemic/Bycatch/reallocation/Figures/landings_effort_ts.png", type="cairo", width=24, height=10, units = "cm", res=400)
+land_append + effort_append
+#dev.off()
+
+```
+
+```{r, echo=T, message=F, warning=F, error=F, eval=F, include=F}
+projections <- ggplot() +
+  geom_point(data=all_estimates[!all_estimates$type=="glm",], aes(as.numeric(month), est, colour=as.character(type)), alpha=0.2, size=1, position = position_dodge(width=0.5))+
+   geom_line(data=all_estimates[!all_estimates$type=="glm",], aes(as.numeric(month), est, group=year,colour=as.character(type)), alpha=0.2, size=1, position = position_dodge(width=0.5))+
+  theme_bw() + facet_grid(type~species) +
+  theme(panel.grid=element_blank(), strip.text = element_blank()) +
+  xlab("Month") +
+  ylab("Projected end-of-year discards (mt)") +
+  scale_x_continuous(breaks=1:12)+
+  scale_colour_brewer(name="Projection method", labels=c("Seasonal", "Landings"), direction = -1, palette = 6, type="qual") +
+  scale_fill_brewer(name="Projection method", labels=c("Seasonal", "Landings"), direction = -1, palette = 6, type="qual") #+
+  #ggtitle(unique(est_mod_coef$model))
+projections <- tag_facet(projections, tag_pool = rep(c("Cod", "Haddock", "Yellowtail"),2), open = "", close="", hjust=-0.1, y=800, vjust=0.2, fontface = 1)
+#png(paste0(direct, "Reallocation/Figures/projected_discards_timeseries.png"), height=10, width=22, units="cm", res=400)
+print(projections)
+#dev.off()
+
+```
+
+```{r, echo=T, message=F, warning=F, error=F, eval=F, include=F}
+all_estimates$date <- dmy(paste0(01, "-", all_estimates$month, "-", all_estimates$year))
+all_estimates$bin <- base::cut(x=all_estimates$rel.error, breaks=c(-0.1, 0.5, 0.75, 1.25, 1.5, 10))
+levels(all_estimates$bin) <- c("high", "medium", "low", "medium", "high")
+
+bands <- data.frame(lo = c(0, 0.5, 0.75, 1.25, 1.5), hi=c(0.5, 0.75, 1.25, 1.5, 10), bin = c("high", "medium", "low", "medium", "high"))
+bands$bin <- factor(bands$bin, levels=c("high", "medium", "low"))
+
+relative_ts <- ggplot() +
+   geom_rect(data=bands, aes(ymin=lo, ymax=hi, xmin=min(all_estimates$date)-years(1),
+                      xmax=max(all_estimates$date) + years(1), fill=bin), alpha =0.2)+
+     # geom_line(data=all_estimates[!all_estimates$type=="glm",], aes(date, rel.error, group=type),#as.character(type)),# alpha=0.2, 
+     #         position = position_dodge(width=0.5))+
+  geom_point(data=all_estimates[!all_estimates$type=="glm",], aes(date, rel.error, colour=bin),#as.character(type)),# alpha=0.2, 
+             size=1, position = position_dodge(width=0.5))+
+  geom_hline(yintercept = 1, lty="dashed")+
+  theme_bw() + facet_grid(type~species) +
+  theme(panel.grid=element_blank(), strip.text.y = element_blank(), axis.text.x=element_text(angle=90, vjust=0.5)) +
+  xlab("Date") +
+  ylab("Monthly relative error") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y")+
+  scale_fill_manual(name="Risk", values=c("#cc3232", "#e7b416", "#2dc937")) +
+  scale_colour_manual(name="Risk", values=c("#cc3232", "#e7b416", "#2dc937", "#e7b416", "#cc3232"))# +
+ # scale_y_log10()
+ 
+#png(paste0(direct, "Reallocation/Figures/relative_error_timeseries_stoplight.png"), height=10, width=30, units="cm", res=400)
+print(relative_ts)
+#dev.off()
+
+relative_ts <- ggplot() +
+   # geom_rect(data=bands, aes(ymin=lo, ymax=hi, xmin=min(all_estimates$date)-years(1),
+   #                    xmax=max(all_estimates$date) + years(1), fill=bin), alpha =0.2)+
+     geom_line(data=all_estimates[!all_estimates$type=="glm",], aes(date, rel.error, group=type),#as.character(type)),# alpha=0.2,
+             position = position_dodge(width=0.5))+
+  geom_point(data=all_estimates[!all_estimates$type=="glm",], aes(date, rel.error, colour=bin),#as.character(type)),# alpha=0.2, 
+             size=1, position = position_dodge(width=0.5))+
+  geom_hline(yintercept = 1, lty="dashed")+
+  theme_bw() + facet_grid(type~species) +
+  theme(panel.grid=element_blank(), strip.text.y = element_blank(), axis.text.x=element_text(angle=90, vjust=0.5)) +
+  xlab("Date") +
+  ylab("Monthly relative error") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y")+
+  scale_fill_manual(name="Risk", values=c("#cc3232", "#e7b416", "#2dc937")) +
+  scale_colour_manual(name="Risk", values=c("#cc3232", "#e7b416", "#2dc937", "#e7b416", "#cc3232")) +
+ scale_y_log10()
+ 
+#png(paste0(direct, "Reallocation/Figures/relative_error_timeseries_stoplight_2.png"), height=10, width=30, units="cm", res=400)
+print(relative_ts)
+#dev.off()
+
+```
+
+
+```{r, eval=F, include=F}
+ggplot() +
+  geom_line(data=gam.dat[gam.dat$variable=="D" & gam.dat$species=="Haddock",], aes(as.numeric(month), value, group=year), alpha=0.2, size=1, position = position_dodge(width=0.5))+
+  theme_bw() + facet_wrap(~year) +
+  theme(panel.grid=element_blank())+ #, strip.text = element_blank()) +
+  xlab("Month") +
+  ylab("Projected end-of-year discards (mt)") +
+  scale_x_continuous(breaks=1:12)+
+  scale_colour_brewer(name="Projection method", labels=c("Seasonal", "Landings"), direction = -1, palette = 6, type="qual") +
+  scale_fill_brewer(name="Projection method", labels=c("Seasonal", "Landings"), direction = -1, palette = 6, type="qual") #+
+  #ggtitle(unique(est_mod_coef$model))
+```
+
+```{r, eval=F, include=F}
+#png(paste0(direct, "Reallocation/Figures/landings_discards.png"), height=10, width=20, units="cm", res=400)
+ggplot() +
+  geom_point(data=discards_month_melt_final[discards_month_melt_final$year>2004 & discards_month_melt_final$variable=="CD",], aes(propcatch, value/eoy_total)) +
+  geom_line(data=discards_month_melt_final[discards_month_melt_final$year>2004 & discards_month_melt_final$variable=="CD",], aes(propcatch, value/eoy_total, group=year)) +
+  theme_bw() + theme(panel.grid=element_blank())+
+  ylab("Proportion of annual scallop fishery discards") +
+  xlab("Proprtion of annual scallop fishery landings") +
+  facet_wrap(~species, scales="free")
+#dev.off()
+```
+
+# Package references
